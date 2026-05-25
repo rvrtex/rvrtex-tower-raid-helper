@@ -18,7 +18,7 @@ Features:
 
 ## Installation
 
-1. Download `MattsTowerRaidHelper.dll`
+1. Download `MattsTowerRaidHelperMono.dll`
 2. Place it in:
 
 Farthest Frontier (Mono)/Mods
