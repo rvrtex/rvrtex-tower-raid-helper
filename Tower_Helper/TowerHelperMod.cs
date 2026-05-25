@@ -8,8 +8,22 @@ using UnityEngine;
 
 namespace Tower_Helper
 {
+    /// <summary>
+    /// Utility/debug mod for Farthest Frontier (Mono).
+    ///
+    /// Features:
+    /// - Enable/disable all player Guard Towers.
+    /// - Spawn selected raids.
+    /// - Spawn selected raid groups with a custom amount.
+    /// - Run escalating endless raids.
+    /// - Remove active raiders without clearing raider camps.
+    /// </summary>
     public class TowerHelperMod : MelonMod
     {
+        // ---------------------------------------------------------------------
+        // Config
+        // ---------------------------------------------------------------------
+
         private MelonPreferences_Category config;
         private MelonPreferences_Entry<KeyCode> enableTowersKey;
         private MelonPreferences_Entry<KeyCode> disableTowersKey;
@@ -17,9 +31,12 @@ namespace Tower_Helper
         private MelonPreferences_Entry<KeyCode> endlessRaidKey;
         private MelonPreferences_Entry<float> raidIntervalSecondsEntry;
 
+        // ---------------------------------------------------------------------
+        // UI State
+        // ---------------------------------------------------------------------
+
         private bool showRaidWindow = false;
-        private Rect raidWindowRect = new Rect(20, 220, 380, 480);
-        private Vector2 raidWindowScroll = Vector2.zero;
+        private Rect raidWindowRect = new Rect(20, 220, 380, 430);
 
         private int selectedDifficultyIndex = 2;
         private int selectedRaidIndex = 4;
@@ -27,12 +44,54 @@ namespace Tower_Helper
         private string groupAmountText = "20";
         private string endlessIntervalText = "30";
 
+        // ---------------------------------------------------------------------
+        // Endless Raid State
+        // ---------------------------------------------------------------------
+
         private bool endlessRaidMode = false;
         private float nextRaidTime = 0f;
-        private int endlessDifficultyIndex = 1; // 0 is RaiderDifficulty_None
+        private int endlessDifficultyIndex = 1; // 0 is RaiderDifficulty_None.
         private int endlessRaidIndex = 0;
 
+        // ---------------------------------------------------------------------
+        // MelonLoader Lifecycle
+        // ---------------------------------------------------------------------
+
         public override void OnInitializeMelon()
+        {
+            InitializeConfig();
+
+            MelonLogger.Msg("Matt's Tower/Raid Helper loaded.");
+            MelonLogger.Msg($"Enable towers key: {enableTowersKey.Value}");
+            MelonLogger.Msg($"Disable towers key: {disableTowersKey.Value}");
+            MelonLogger.Msg($"Raid window key: {raidWindowKey.Value}");
+            MelonLogger.Msg($"Endless raid key: {endlessRaidKey.Value}");
+            MelonLogger.Msg($"Endless raid interval: {raidIntervalSecondsEntry.Value} seconds");
+        }
+
+        public override void OnUpdate()
+        {
+            HandleHotkeys();
+            ProcessEndlessRaidMode();
+        }
+
+        public override void OnGUI()
+        {
+            if (!showRaidWindow)
+            {
+                return;
+            }
+
+            GUI.depth = 0;
+
+            raidWindowRect = GUI.Window(
+                998877,
+                raidWindowRect,
+                DrawRaidWindow,
+                "Matt's Tower/Raid Helper");
+        }
+
+        private void InitializeConfig()
         {
             config = MelonPreferences.CreateCategory("MatthewTowerHelper");
 
@@ -61,19 +120,13 @@ namespace Tower_Helper
                 30f,
                 "Seconds between endless raid spawns");
 
-            endlessIntervalText = Mathf.Clamp(raidIntervalSecondsEntry.Value, 10f, 3600f).ToString("0");
+            raidIntervalSecondsEntry.Value = ClampEndlessInterval(raidIntervalSecondsEntry.Value);
+            endlessIntervalText = raidIntervalSecondsEntry.Value.ToString("0");
 
             config.SaveToFile();
-
-            MelonLogger.Msg("Matthew Tower Helper loaded.");
-            MelonLogger.Msg($"Enable towers key: {enableTowersKey.Value}");
-            MelonLogger.Msg($"Disable towers key: {disableTowersKey.Value}");
-            MelonLogger.Msg($"Raid window key: {raidWindowKey.Value}");
-            MelonLogger.Msg($"Endless raid key: {endlessRaidKey.Value}");
-            MelonLogger.Msg($"Endless raid interval: {raidIntervalSecondsEntry.Value} seconds");
         }
 
-        public override void OnUpdate()
+        private void HandleHotkeys()
         {
             if (Input.GetKeyDown(enableTowersKey.Value))
             {
@@ -94,31 +147,18 @@ namespace Tower_Helper
             {
                 ToggleEndlessRaidMode();
             }
-
-            ProcessEndlessRaidMode();
         }
 
-        public override void OnGUI()
-        {
-            if (showRaidWindow)
-            {
-                GUI.depth = 0;
-
-                raidWindowRect = GUI.Window(
-                    998877,
-                    raidWindowRect,
-                    DrawRaidWindow,
-                    "Matthew Tower Helper"
-                );
-
-                Input.ResetInputAxes();
-            }
-        }
+        // ---------------------------------------------------------------------
+        // Game Manager Access
+        // ---------------------------------------------------------------------
 
         private GameManager GetGameManager()
         {
             var gameManagerObject = GameObject.Find("GameManager");
-            return gameManagerObject == null ? null : gameManagerObject.GetComponent<GameManager>();
+            return gameManagerObject == null
+                ? null
+                : gameManagerObject.GetComponent<GameManager>();
         }
 
         private CombatManager GetCombatManager()
@@ -126,6 +166,10 @@ namespace Tower_Helper
             var gameManager = GetGameManager();
             return gameManager == null ? null : gameManager.combatManager;
         }
+
+        // ---------------------------------------------------------------------
+        // Tower Controls
+        // ---------------------------------------------------------------------
 
         private void SetTowersEnabled(bool enabled)
         {
@@ -144,13 +188,17 @@ namespace Tower_Helper
                         continue;
                     }
 
+                    // The second argument marks this as a player-driven work toggle,
+                    // which mirrors the normal building UI behavior.
                     tower.SetWorkEnabled(enabled, true);
                     changed++;
                 }
                 catch (System.Exception ex)
                 {
                     skipped++;
-                    MelonLogger.Error($"Failed to toggle tower at {tower.transform.position}: {ex.Message}");
+
+                    string position = tower == null ? "unknown" : tower.transform.position.ToString();
+                    MelonLogger.Error($"Failed to toggle tower at {position}: {ex.Message}");
                 }
             }
 
@@ -171,15 +219,23 @@ namespace Tower_Helper
                 return false;
             }
 
+            // Player lookout towers tested so far are named "GuardTower".
+            // This helps avoid raider camp towers.
             if (gameObject.name != "GuardTower")
             {
                 return false;
             }
 
+            // These components were present on completed player towers.
+            // Under-construction towers did not appear as GuardTower objects in testing.
             return gameObject.GetComponent<BuildingWidgetController>() != null &&
                    gameObject.GetComponent<WorkerComponent>() != null &&
                    gameObject.GetComponent<DefensiveBuildingWidgetBlackboard>() != null;
         }
+
+        // ---------------------------------------------------------------------
+        // Raider Cleanup
+        // ---------------------------------------------------------------------
 
         private void KillAllRaiders()
         {
@@ -193,26 +249,15 @@ namespace Tower_Helper
                     return;
                 }
 
-                var field = combatManager.GetType().GetField(
-                    "raiders",
-                    System.Reflection.BindingFlags.Public |
-                    System.Reflection.BindingFlags.NonPublic |
-                    System.Reflection.BindingFlags.Instance);
-
-                if (field == null)
-                {
-                    MelonLogger.Error("Could not find raiders field.");
-                    return;
-                }
-
-                var raidersEnumerable = field.GetValue(combatManager) as IEnumerable;
+                var raidersEnumerable = GetActiveRaiders(combatManager);
 
                 if (raidersEnumerable == null)
                 {
-                    MelonLogger.Error("Raiders collection is null.");
+                    MelonLogger.Error("Raiders collection is null or could not be found.");
                     return;
                 }
 
+                // Copy first because killing/removing raiders mutates the underlying list.
                 var raidersToKill = new List<object>();
 
                 foreach (var raider in raidersEnumerable)
@@ -250,6 +295,22 @@ namespace Tower_Helper
             }
         }
 
+        private IEnumerable GetActiveRaiders(CombatManager combatManager)
+        {
+            var field = combatManager.GetType().GetField(
+                "raiders",
+                System.Reflection.BindingFlags.Public |
+                System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Instance);
+
+            if (field == null)
+            {
+                return null;
+            }
+
+            return field.GetValue(combatManager) as IEnumerable;
+        }
+
         private bool TryCallSimpleDeathMethod(object raider)
         {
             if (raider == null)
@@ -266,21 +327,15 @@ namespace Tower_Helper
             {
                 string name = method.Name.ToLowerInvariant();
 
-                // Avoid Unity lifecycle methods like OnDestroy. Only call obvious no-argument gameplay death methods.
+                // Avoid Unity lifecycle methods like OnDestroy.
+                // Only call obvious no-argument gameplay death methods.
                 bool looksLikeDeathMethod =
                     name == "die" ||
                     name == "kill" ||
                     name == "killself" ||
                     name == "ondeath";
 
-                if (!looksLikeDeathMethod)
-                {
-                    continue;
-                }
-
-                var parameters = method.GetParameters();
-
-                if (parameters.Length != 0)
+                if (!looksLikeDeathMethod || method.GetParameters().Length != 0)
                 {
                     continue;
                 }
@@ -300,66 +355,9 @@ namespace Tower_Helper
             return false;
         }
 
-        private void ToggleEndlessRaidMode()
-        {
-            endlessRaidMode = !endlessRaidMode;
-
-            if (endlessRaidMode)
-            {
-                endlessDifficultyIndex = Mathf.Max(1, endlessDifficultyIndex);
-                endlessRaidIndex = Mathf.Max(0, endlessRaidIndex);
-                nextRaidTime = Time.time + 5f;
-                MelonLogger.Msg("Endless raid mode ENABLED. First raid in 5 seconds.");
-            }
-            else
-            {
-                MelonLogger.Msg("Endless raid mode DISABLED.");
-            }
-        }
-
-        private void ProcessEndlessRaidMode()
-        {
-            if (!endlessRaidMode || Time.time < nextRaidTime)
-            {
-                return;
-            }
-
-            SpawnConfiguredRaid(endlessDifficultyIndex, endlessRaidIndex);
-            AdvanceEndlessRaidSelection();
-
-            float interval = Mathf.Clamp(raidIntervalSecondsEntry.Value, 10f, 3600f);
-            nextRaidTime = Time.time + interval;
-        }
-
-        private void AdvanceEndlessRaidSelection()
-        {
-            endlessRaidIndex++;
-
-            int raidCount = GetRaidCount(endlessDifficultyIndex);
-
-            if (raidCount <= 0 || endlessRaidIndex >= raidCount)
-            {
-                endlessRaidIndex = 0;
-                endlessDifficultyIndex++;
-            }
-
-            var combatManager = GetCombatManager();
-
-            if (combatManager == null || combatManager.raiderDifficulties == null || combatManager.raiderDifficulties.Count == 0)
-            {
-                endlessDifficultyIndex = 1;
-                return;
-            }
-
-            int maxDifficultyIndex = combatManager.raiderDifficulties.Count - 1;
-
-            if (endlessDifficultyIndex > maxDifficultyIndex)
-            {
-                endlessDifficultyIndex = maxDifficultyIndex;
-            }
-
-            endlessDifficultyIndex = Mathf.Max(1, endlessDifficultyIndex);
-        }
+        // ---------------------------------------------------------------------
+        // Raid Spawning
+        // ---------------------------------------------------------------------
 
         private void SpawnConfiguredRaid(int difficultyIndex, int raidIndex)
         {
@@ -404,13 +402,110 @@ namespace Tower_Helper
             }
         }
 
+        private void SpawnSelectedGroup(CombatManager combatManager, List<RaidGroupEntry> groupEntries)
+        {
+            if (combatManager == null)
+            {
+                MelonLogger.Error("CombatManager not found.");
+                return;
+            }
+
+            if (groupEntries == null || groupEntries.Count == 0)
+            {
+                MelonLogger.Warning("No group entries available for selected raid.");
+                return;
+            }
+
+            if (!int.TryParse(groupAmountText, out int amount))
+            {
+                MelonLogger.Warning($"Invalid amount: {groupAmountText}");
+                return;
+            }
+
+            amount = Mathf.Clamp(amount, 1, 500);
+            selectedGroupIndex = Mathf.Clamp(selectedGroupIndex, 0, groupEntries.Count - 1);
+
+            var group = groupEntries[selectedGroupIndex].group;
+
+            MelonLogger.Msg($"Spawning group: {group.name}, Amount: {amount}");
+            combatManager.DebugSpawnRaidGroup(group, amount);
+        }
+
+        // ---------------------------------------------------------------------
+        // Endless Raid Mode
+        // ---------------------------------------------------------------------
+
+        private void ToggleEndlessRaidMode()
+        {
+            endlessRaidMode = !endlessRaidMode;
+
+            if (endlessRaidMode)
+            {
+                endlessDifficultyIndex = Mathf.Max(1, endlessDifficultyIndex);
+                endlessRaidIndex = Mathf.Max(0, endlessRaidIndex);
+                nextRaidTime = Time.time + 5f;
+                MelonLogger.Msg("Endless raid mode ENABLED. First raid in 5 seconds.");
+            }
+            else
+            {
+                MelonLogger.Msg("Endless raid mode DISABLED.");
+            }
+        }
+
+        private void ProcessEndlessRaidMode()
+        {
+            if (!endlessRaidMode || Time.time < nextRaidTime)
+            {
+                return;
+            }
+
+            SpawnConfiguredRaid(endlessDifficultyIndex, endlessRaidIndex);
+            AdvanceEndlessRaidSelection();
+
+            nextRaidTime = Time.time + ClampEndlessInterval(raidIntervalSecondsEntry.Value);
+        }
+
+        private void AdvanceEndlessRaidSelection()
+        {
+            endlessRaidIndex++;
+
+            int raidCount = GetRaidCount(endlessDifficultyIndex);
+
+            if (raidCount <= 0 || endlessRaidIndex >= raidCount)
+            {
+                endlessRaidIndex = 0;
+                endlessDifficultyIndex++;
+            }
+
+            var combatManager = GetCombatManager();
+
+            if (combatManager == null ||
+                combatManager.raiderDifficulties == null ||
+                combatManager.raiderDifficulties.Count == 0)
+            {
+                endlessDifficultyIndex = 1;
+                return;
+            }
+
+            int maxDifficultyIndex = combatManager.raiderDifficulties.Count - 1;
+
+            if (endlessDifficultyIndex > maxDifficultyIndex)
+            {
+                endlessDifficultyIndex = maxDifficultyIndex;
+            }
+
+            endlessDifficultyIndex = Mathf.Max(1, endlessDifficultyIndex);
+        }
+
         private int GetRaidCount(int difficultyIndex)
         {
             try
             {
                 var combatManager = GetCombatManager();
 
-                if (combatManager == null || combatManager.raiderDifficulties == null || combatManager.raiderDifficulties.Count == 0)
+                if (combatManager == null ||
+                    combatManager.raiderDifficulties == null ||
+                    combatManager.raiderDifficulties.Count == 0)
                 {
                     return 0;
                 }
@@ -426,12 +521,74 @@ namespace Tower_Helper
             }
         }
 
+        private string GetEndlessRaidName()
+        {
+            try
+            {
+                var combatManager = GetCombatManager();
+
+                if (combatManager == null ||
+                    combatManager.raiderDifficulties == null ||
+                    combatManager.raiderDifficulties.Count == 0)
+                {
+                    return "Unavailable";
+                }
+
+                endlessDifficultyIndex = Mathf.Clamp(endlessDifficultyIndex, 1, combatManager.raiderDifficulties.Count - 1);
+
+                var raids = combatManager.raiderDifficulties[endlessDifficultyIndex].raidGroups;
+
+                if (raids == null || raids.Count == 0)
+                {
+                    return "Unavailable";
+                }
+
+                endlessRaidIndex = Mathf.Clamp(endlessRaidIndex, 0, raids.Count - 1);
+
+                return combatManager.raiderDifficulties[endlessDifficultyIndex].name + " / " +
+                       raids[endlessRaidIndex].raidIncursionSetupData.name;
+            }
+            catch
+            {
+                return "Unavailable";
+            }
+        }
+
+        private void SaveEndlessIntervalFromText()
+        {
+            if (!float.TryParse(endlessIntervalText, out float interval))
+            {
+                MelonLogger.Warning($"Invalid endless interval: {endlessIntervalText}");
+                endlessIntervalText = ClampEndlessInterval(raidIntervalSecondsEntry.Value).ToString("0");
+                return;
+            }
+
+            interval = ClampEndlessInterval(interval);
+            raidIntervalSecondsEntry.Value = interval;
+            endlessIntervalText = interval.ToString("0");
+
+            config.SaveToFile();
+
+            MelonLogger.Msg($"Endless raid interval saved: {interval:0} seconds");
+        }
+
+        private float ClampEndlessInterval(float interval)
+        {
+            return Mathf.Clamp(interval, 10f, 3600f);
+        }
+
+        // ---------------------------------------------------------------------
+        // User Interface
+        // ---------------------------------------------------------------------
+
         private void DrawRaidWindow(int windowId)
         {
             try
             {
-                GUIStyle boldLabel = new GUIStyle(GUI.skin.label);
-                boldLabel.fontStyle = FontStyle.Bold;
+                var boldLabel = new GUIStyle(GUI.skin.label)
+                {
+                    fontStyle = FontStyle.Bold
+                };
 
                 var combatManager = GetCombatManager();
 
@@ -451,241 +608,11 @@ namespace Tower_Helper
                     return;
                 }
 
-                GUILayout.Label("HOME toggles this window.");
-
-                // =========================
-                // TOWERS
-                // =========================
-
-                GUILayout.Space(6);
-
-                GUILayout.BeginHorizontal();
-
-                if (GUILayout.Button("Enable Towers"))
-                {
-                    SetTowersEnabled(true);
-                }
-
-                if (GUILayout.Button("Disable Towers"))
-                {
-                    SetTowersEnabled(false);
-                }
-
-                GUILayout.EndHorizontal();
-
-                // =========================
-                // DIFFICULTY
-                // =========================
-
-                GUILayout.Space(10);
-
-                GUILayout.BeginHorizontal();
-
-                GUILayout.Label("Difficulty:", boldLabel, GUILayout.Width(85));
-
-                if (GUILayout.Button("<", GUILayout.Width(32)))
-                {
-                    selectedDifficultyIndex = Mathf.Max(0, selectedDifficultyIndex - 1);
-                    selectedRaidIndex = 0;
-                    selectedGroupIndex = 0;
-                }
-
-                selectedDifficultyIndex = Mathf.Clamp(selectedDifficultyIndex, 0, difficulties.Count - 1);
-
-                GUILayout.Label(
-                    CleanName(difficulties[selectedDifficultyIndex].name),
-                    GUILayout.Width(180));
-
-                if (GUILayout.Button(">", GUILayout.Width(32)))
-                {
-                    selectedDifficultyIndex = Mathf.Min(
-                        difficulties.Count - 1,
-                        selectedDifficultyIndex + 1);
-
-                    selectedRaidIndex = 0;
-                    selectedGroupIndex = 0;
-                }
-
-                GUILayout.EndHorizontal();
-
-                var raids = difficulties[selectedDifficultyIndex].raidGroups;
-
-                if (raids == null || raids.Count == 0)
-                {
-                    GUILayout.Label("No raids for this difficulty.");
-                    GUI.DragWindow();
-                    return;
-                }
-
-                // =========================
-                // RAID INCURSION
-                // =========================
-
-                GUILayout.BeginHorizontal();
-
-                GUILayout.Label("Raid:", boldLabel, GUILayout.Width(85));
-
-                if (GUILayout.Button("<", GUILayout.Width(32)))
-                {
-                    selectedRaidIndex = Mathf.Max(0, selectedRaidIndex - 1);
-                    selectedGroupIndex = 0;
-                }
-
-                selectedRaidIndex = Mathf.Clamp(
-                    selectedRaidIndex,
-                    0,
-                    raids.Count - 1);
-
-                GUILayout.Label(
-                    CleanName(raids[selectedRaidIndex].raidIncursionSetupData.name),
-                    GUILayout.Width(180));
-
-                if (GUILayout.Button(">", GUILayout.Width(32)))
-                {
-                    selectedRaidIndex = Mathf.Min(
-                        raids.Count - 1,
-                        selectedRaidIndex + 1);
-
-                    selectedGroupIndex = 0;
-                }
-
-                GUILayout.EndHorizontal();
-
-                GUILayout.Space(6);
-
-                if (GUILayout.Button("Spawn Selected Raid"))
-                {
-                    SpawnConfiguredRaid(
-                        selectedDifficultyIndex,
-                        selectedRaidIndex);
-                }
-
-                // =========================
-                // RAID GROUPS
-                // =========================
-
-                var groupEntries =
-                    raids[selectedRaidIndex]
-                    .raidIncursionSetupData
-                    .groupEntries;
-
-                GUILayout.Space(12);
-
-                GUILayout.BeginHorizontal();
-
-                GUILayout.Label("Group:", boldLabel, GUILayout.Width(85));
-
-                if (GUILayout.Button("<", GUILayout.Width(32)))
-                {
-                    selectedGroupIndex = Mathf.Max(0, selectedGroupIndex - 1);
-                }
-
-                selectedGroupIndex = Mathf.Clamp(
-                    selectedGroupIndex,
-                    0,
-                    groupEntries.Count - 1);
-
-                GUILayout.Label(
-                    CleanName(groupEntries[selectedGroupIndex].group.name),
-                    GUILayout.Width(180));
-
-                if (GUILayout.Button(">", GUILayout.Width(32)))
-                {
-                    selectedGroupIndex = Mathf.Min(
-                        groupEntries.Count - 1,
-                        selectedGroupIndex + 1);
-                }
-
-                GUILayout.EndHorizontal();
-
-                GUILayout.BeginHorizontal();
-
-                GUILayout.Label("Amount:", boldLabel, GUILayout.Width(85));
-
-                groupAmountText = GUILayout.TextField(
-                    groupAmountText,
-                    GUILayout.Width(80));
-
-                GUILayout.EndHorizontal();
-
-                GUILayout.Space(6);
-
-                if (GUILayout.Button("Spawn Selected Group"))
-                {
-                    SpawnSelectedGroup(combatManager, groupEntries);
-                }
-
-                // =========================
-                // ENDLESS MODE
-                // =========================
-
-                GUILayout.Space(14);
-
-                GUILayout.BeginHorizontal();
-
-                GUILayout.Label("Endless Raid:", boldLabel, GUILayout.Width(85));
-
-                GUILayout.Label(
-                    endlessRaidMode ? "Status ON" : "Status OFF");
-
-                GUILayout.EndHorizontal();
-
-                GUILayout.Label(
-                    $"Next Endless: {CleanName(GetEndlessRaidName())}");
-
-                GUILayout.Label(
-                    $"Next Raid In: {Mathf.Max(0, nextRaidTime - Time.time):0}s");
-
-                GUILayout.BeginHorizontal();
-
-                GUILayout.Label("Interval:", boldLabel, GUILayout.Width(85));
-
-                string intervalString =
-                    raidIntervalSecondsEntry.Value.ToString("0");
-
-                intervalString = GUILayout.TextField(
-                    intervalString,
-                    GUILayout.Width(80));
-
-                if (GUILayout.Button("Save", GUILayout.Width(60)))
-                {
-                    float parsedInterval;
-
-                    if (float.TryParse(intervalString, out parsedInterval))
-                    {
-                        parsedInterval = Mathf.Clamp(parsedInterval, 10f, 3600f);
-
-                        raidIntervalSecondsEntry.Value = parsedInterval;
-
-                        config.SaveToFile();
-
-                        MelonLogger.Msg(
-                            $"Endless raid interval saved: {parsedInterval} seconds");
-                    }
-                }
-
-                GUILayout.EndHorizontal();
-
-                GUILayout.Space(6);
-
-                if (GUILayout.Button(
-                    endlessRaidMode
-                        ? "Stop Endless Raids"
-                        : "Start Endless Raids"))
-                {
-                    ToggleEndlessRaidMode();
-                }
-
-                // =========================
-                // RAIDER CONTROLS
-                // =========================
-
-                GUILayout.Space(14);
-
-                if (GUILayout.Button("Kill All Active Raiders"))
-                {
-                    KillAllRaiders();
-                }
+                DrawWindowHeader();
+                DrawTowerControls();
+                DrawRaidControls(combatManager, difficulties, boldLabel);
+                DrawEndlessControls(boldLabel);
+                DrawRaiderControls();
             }
             catch (System.Exception ex)
             {
@@ -696,10 +623,81 @@ namespace Tower_Helper
             GUI.DragWindow();
         }
 
-        private void DrawDifficultySelector(System.Collections.Generic.List<RaiderDifficultyEntry> difficulties)
+        private void DrawWindowHeader()
         {
-            GUILayout.Label("Difficulty");
+            GUILayout.Label($"{raidWindowKey.Value} toggles this window.");
+            GUILayout.Space(6);
+        }
+
+        private void DrawTowerControls()
+        {
             GUILayout.BeginHorizontal();
+
+            if (GUILayout.Button("Enable Towers"))
+            {
+                SetTowersEnabled(true);
+            }
+
+            if (GUILayout.Button("Disable Towers"))
+            {
+                SetTowersEnabled(false);
+            }
+
+            GUILayout.EndHorizontal();
+            GUILayout.Space(10);
+        }
+
+        private void DrawRaidControls(
+            CombatManager combatManager,
+            List<RaiderDifficultyEntry> difficulties,
+            GUIStyle boldLabel)
+        {
+            DrawDifficultyRow(difficulties, boldLabel);
+
+            var raids = difficulties[selectedDifficultyIndex].raidGroups;
+
+            if (raids == null || raids.Count == 0)
+            {
+                GUILayout.Label("No raids for this difficulty.");
+                return;
+            }
+
+            DrawRaidRow(raids, boldLabel);
+
+            GUILayout.Space(6);
+
+            if (GUILayout.Button("Spawn Selected Raid"))
+            {
+                SpawnConfiguredRaid(selectedDifficultyIndex, selectedRaidIndex);
+            }
+
+            var groupEntries = raids[selectedRaidIndex].raidIncursionSetupData.groupEntries;
+
+            if (groupEntries == null || groupEntries.Count == 0)
+            {
+                GUILayout.Label("No groups for selected raid.");
+                return;
+            }
+
+            GUILayout.Space(12);
+            DrawGroupRow(groupEntries, boldLabel);
+            DrawGroupAmountRow(boldLabel);
+
+            GUILayout.Space(6);
+
+            if (GUILayout.Button("Spawn Selected Group"))
+            {
+                SpawnSelectedGroup(combatManager, groupEntries);
+            }
+
+            GUILayout.Space(14);
+        }
+
+        private void DrawDifficultyRow(List<RaiderDifficultyEntry> difficulties, GUIStyle boldLabel)
+        {
+            GUILayout.BeginHorizontal();
+
+            GUILayout.Label("Difficulty:", boldLabel, GUILayout.Width(85));
 
             if (GUILayout.Button("<", GUILayout.Width(32)))
             {
@@ -709,7 +707,8 @@ namespace Tower_Helper
             }
 
             selectedDifficultyIndex = Mathf.Clamp(selectedDifficultyIndex, 0, difficulties.Count - 1);
-            GUILayout.Label(CleanName(difficulties[selectedDifficultyIndex].name));
+
+            GUILayout.Label(CleanName(difficulties[selectedDifficultyIndex].name), GUILayout.Width(180));
 
             if (GUILayout.Button(">", GUILayout.Width(32)))
             {
@@ -721,10 +720,11 @@ namespace Tower_Helper
             GUILayout.EndHorizontal();
         }
 
-        private void DrawRaidSelector(System.Collections.Generic.List<RaidIncursion> raids)
+        private void DrawRaidRow(List<RaidIncursion> raids, GUIStyle boldLabel)
         {
-            GUILayout.Label("Raid Incursion");
             GUILayout.BeginHorizontal();
+
+            GUILayout.Label("Raid:", boldLabel, GUILayout.Width(85));
 
             if (GUILayout.Button("<", GUILayout.Width(32)))
             {
@@ -733,7 +733,10 @@ namespace Tower_Helper
             }
 
             selectedRaidIndex = Mathf.Clamp(selectedRaidIndex, 0, raids.Count - 1);
-            GUILayout.Label(CleanName(raids[selectedRaidIndex].raidIncursionSetupData.name));
+
+            GUILayout.Label(
+                CleanName(raids[selectedRaidIndex].raidIncursionSetupData.name),
+                GUILayout.Width(180));
 
             if (GUILayout.Button(">", GUILayout.Width(32)))
             {
@@ -744,10 +747,11 @@ namespace Tower_Helper
             GUILayout.EndHorizontal();
         }
 
-        private void DrawGroupSelector(System.Collections.Generic.List<RaidGroupEntry> groupEntries)
+        private void DrawGroupRow(List<RaidGroupEntry> groupEntries, GUIStyle boldLabel)
         {
-            GUILayout.Label("Specific Raid Group");
             GUILayout.BeginHorizontal();
+
+            GUILayout.Label("Group:", boldLabel, GUILayout.Width(85));
 
             if (GUILayout.Button("<", GUILayout.Width(32)))
             {
@@ -755,7 +759,10 @@ namespace Tower_Helper
             }
 
             selectedGroupIndex = Mathf.Clamp(selectedGroupIndex, 0, groupEntries.Count - 1);
-            GUILayout.Label(CleanName(groupEntries[selectedGroupIndex].group.name));
+
+            GUILayout.Label(
+                CleanName(groupEntries[selectedGroupIndex].group.name),
+                GUILayout.Width(180));
 
             if (GUILayout.Button(">", GUILayout.Width(32)))
             {
@@ -765,68 +772,61 @@ namespace Tower_Helper
             GUILayout.EndHorizontal();
         }
 
-        private void SpawnSelectedGroup(CombatManager combatManager, System.Collections.Generic.List<RaidGroupEntry> groupEntries)
+        private void DrawGroupAmountRow(GUIStyle boldLabel)
         {
-            if (!int.TryParse(groupAmountText, out int amount))
-            {
-                MelonLogger.Warning($"Invalid amount: {groupAmountText}");
-                return;
-            }
+            GUILayout.BeginHorizontal();
 
-            amount = Mathf.Clamp(amount, 1, 500);
-            selectedGroupIndex = Mathf.Clamp(selectedGroupIndex, 0, groupEntries.Count - 1);
+            GUILayout.Label("Amount:", boldLabel, GUILayout.Width(85));
+            groupAmountText = GUILayout.TextField(groupAmountText, GUILayout.Width(80));
 
-            var group = groupEntries[selectedGroupIndex].group;
-
-            MelonLogger.Msg($"Spawning group: {group.name}, Amount: {amount}");
-            combatManager.DebugSpawnRaidGroup(group, amount);
+            GUILayout.EndHorizontal();
         }
 
-        private void SaveEndlessIntervalFromText()
+        private void DrawEndlessControls(GUIStyle boldLabel)
         {
-            if (!float.TryParse(endlessIntervalText, out float interval))
+            GUILayout.BeginHorizontal();
+
+            GUILayout.Label("Endless Raid:", boldLabel, GUILayout.Width(85));
+            GUILayout.Label(endlessRaidMode ? "Status ON" : "Status OFF");
+
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label($"Next Endless: {CleanName(GetEndlessRaidName())}");
+            GUILayout.Label($"Next Raid In: {Mathf.Max(0, nextRaidTime - Time.time):0}s");
+
+            GUILayout.BeginHorizontal();
+
+            GUILayout.Label("Interval:", boldLabel, GUILayout.Width(85));
+            endlessIntervalText = GUILayout.TextField(endlessIntervalText, GUILayout.Width(80));
+
+            if (GUILayout.Button("Save", GUILayout.Width(60)))
             {
-                MelonLogger.Warning($"Invalid endless interval: {endlessIntervalText}");
-                endlessIntervalText = Mathf.Clamp(raidIntervalSecondsEntry.Value, 10f, 3600f).ToString("0");
-                return;
+                SaveEndlessIntervalFromText();
             }
 
-            interval = Mathf.Clamp(interval, 10f, 3600f);
-            raidIntervalSecondsEntry.Value = interval;
-            endlessIntervalText = interval.ToString("0");
-            config.SaveToFile();
+            GUILayout.EndHorizontal();
 
-            MelonLogger.Msg($"Endless raid interval saved: {interval:0} seconds");
+            GUILayout.Space(6);
+
+            if (GUILayout.Button(endlessRaidMode ? "Stop Endless Raids" : "Start Endless Raids"))
+            {
+                ToggleEndlessRaidMode();
+            }
+
+            GUILayout.Space(14);
         }
 
-        private string GetEndlessRaidName()
+        private void DrawRaiderControls()
         {
-            try
+            if (GUILayout.Button("Kill All Active Raiders"))
             {
-                var combatManager = GetCombatManager();
-
-                if (combatManager == null || combatManager.raiderDifficulties == null || combatManager.raiderDifficulties.Count == 0)
-                {
-                    return "Unavailable";
-                }
-
-                endlessDifficultyIndex = Mathf.Clamp(endlessDifficultyIndex, 1, combatManager.raiderDifficulties.Count - 1);
-                var raids = combatManager.raiderDifficulties[endlessDifficultyIndex].raidGroups;
-
-                if (raids == null || raids.Count == 0)
-                {
-                    return "Unavailable";
-                }
-
-                endlessRaidIndex = Mathf.Clamp(endlessRaidIndex, 0, raids.Count - 1);
-
-                return combatManager.raiderDifficulties[endlessDifficultyIndex].name + " / " + raids[endlessRaidIndex].raidIncursionSetupData.name;
-            }
-            catch
-            {
-                return "Unavailable";
+                KillAllRaiders();
             }
         }
+
+        // ---------------------------------------------------------------------
+        // Formatting
+        // ---------------------------------------------------------------------
 
         private string CleanName(string rawName)
         {
